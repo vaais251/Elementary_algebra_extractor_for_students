@@ -26,7 +26,7 @@ def main():
     print("Index saved successfully.")
     
     # 5. Semantic test search
-    query = "What formula relates the sides of a right triangle?"
+    query = "Two persistent problems define the current landscape of AI-assisted self-study:"
     print(f"\nRunning semantic search for query: '{query}'")
     
     results = vectorstore.similarity_search(query, k=1)
