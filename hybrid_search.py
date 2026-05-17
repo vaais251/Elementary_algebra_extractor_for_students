@@ -34,13 +34,21 @@ def rrf_fusion(bm25_docs, dense_docs, k=60):
     return [doc_lookup[key] for key in sorted_keys]
 
 def hybrid_retrieve(query, top_k=5):
-    # Initialize BM25 Retriever
-    es_store = ElasticsearchStore(
-        es_url="http://localhost:9200",
-        index_name="edumaestro-bm25",
-        strategy=BM25Strategy()
-    )
-    
+    bm25_docs = []
+    # Initialize BM25 Retriever with a graceful connection check
+    try:
+        es_store = ElasticsearchStore(
+            es_url="http://localhost:9200",
+            index_name="edumaestro-bm25",
+            strategy=BM25Strategy()
+        )
+        print("Retrieving from BM25 (Elasticsearch)...")
+        bm25_docs = es_store.similarity_search(query, k=10)
+    except Exception as e:
+        print(f"\n[Warning] Could not connect to Elasticsearch at http://localhost:9200.")
+        print(f"          Detail: {e}")
+        print("          Falling back to Dense Search (FAISS) only.\n")
+
     # Initialize Dense Retriever
     embeddings = HuggingFaceEmbeddings(model_name="all-MiniLM-L6-v2")
     faiss_store = FAISS.load_local(
@@ -49,12 +57,12 @@ def hybrid_retrieve(query, top_k=5):
         allow_dangerous_deserialization=True
     )
     
-    # Fetch top 10 results from both retrievers
-    print("Retrieving from BM25 (Elasticsearch)...")
-    bm25_docs = es_store.similarity_search(query, k=10)
-    
     print("Retrieving from Dense (FAISS)...")
     dense_docs = faiss_store.similarity_search(query, k=10)
+    
+    if not bm25_docs:
+        print("Returning FAISS results directly (no BM25 results available).")
+        return dense_docs[:top_k]
     
     # Fuse results using RRF
     print("Applying Reciprocal Rank Fusion (RRF)...")
