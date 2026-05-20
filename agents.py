@@ -16,7 +16,7 @@ load_dotenv()
 # LLM Initialization
 # ─────────────────────────────────────────────
 llm = ChatGoogleGenerativeAI(
-    model="gemini-2.5-flash",
+    model="gemini-3.1-flash-lite",
     google_api_key=os.environ.get("GOOGLE_API_KEY"),
     temperature=0.0,
 )
@@ -103,7 +103,7 @@ def analyze_query(user_input: str) -> dict:
 if __name__ == "__main__":
     sys.stdout.reconfigure(encoding="utf-8")
 
-    test_query = "Can you explain the Pythagorean theorem and show me a quick example?"
+    test_query = "what is  Multi-Agent LLM Orchestration"
     print(f"Test Query: '{test_query}'\n")
     print("=" * 60)
 
