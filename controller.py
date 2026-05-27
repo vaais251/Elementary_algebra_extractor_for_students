@@ -82,7 +82,7 @@ def generate_assessment(topic: str) -> list:
 
     try:
         response = _genai_client.models.generate_content(
-            model="gemini-1.5-flash",
+            model="gemini-2.5-flash",
             contents=prompt,
             config=genai_types.GenerateContentConfig(temperature=0.4),
         )
@@ -219,7 +219,7 @@ def run_edumaestro(user_query: str) -> dict:
 # ─────────────────────────────────────────────────────────────────────────────
 
 if __name__ == "__main__":
-    result = run_edumaestro("Explain the Pythagorean theorem")
+    result = run_edumaestro("what is the two persistent problems define the current landscape of AI-assisted self-study:")
 
     separator = "=" * 60
     print(f"\n{separator}")

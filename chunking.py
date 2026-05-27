@@ -32,8 +32,8 @@ def get_chunked_docs() -> list[Document]:
     
     # Initialize the RecursiveCharacterTextSplitter
     text_splitter = RecursiveCharacterTextSplitter(
-        chunk_size=300,
-        chunk_overlap=50
+        chunk_size=800,
+        chunk_overlap=150
     )
     
     # Split the documents into chunks

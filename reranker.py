@@ -8,7 +8,7 @@ from hybrid_search import hybrid_retrieve
 model = CrossEncoder('cross-encoder/ms-marco-MiniLM-L-6-v2', max_length=512)
 embeddings = HuggingFaceEmbeddings(model_name="all-MiniLM-L6-v2")
 
-def mmr_select(documents: list, cross_encoder_scores: list, top_k: int = 5, lambda_mult: float = 0.5) -> list:
+def mmr_select(documents: list, cross_encoder_scores: list, top_k: int = 5, lambda_mult: float = 0.75) -> list:
     """
     Selects top_k documents from a candidate list using Maximal Marginal Relevance (MMR).
     

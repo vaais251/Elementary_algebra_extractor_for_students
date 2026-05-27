@@ -1,7 +1,12 @@
 import sys
-from langchain_elasticsearch import ElasticsearchStore, BM25Strategy
+import pickle
+from rank_bm25 import BM25Okapi
 from langchain_community.vectorstores import FAISS
 from langchain_huggingface import HuggingFaceEmbeddings
+
+def tokenize(text: str) -> list[str]:
+    """Simple whitespace + lowercase tokenizer for BM25."""
+    return text.lower().split()
 
 def rrf_fusion(bm25_docs, dense_docs, k=60):
     """
@@ -35,17 +40,26 @@ def rrf_fusion(bm25_docs, dense_docs, k=60):
 
 def hybrid_retrieve(query, top_k=5):
     bm25_docs = []
-    # Initialize BM25 Retriever with a graceful connection check
+    
+    # Load BM25 index from disk
     try:
-        es_store = ElasticsearchStore(
-            es_url="http://localhost:9200",
-            index_name="edumaestro-bm25",
-            strategy=BM25Strategy()
-        )
-        print("Retrieving from BM25 (Elasticsearch)...")
-        bm25_docs = es_store.similarity_search(query, k=10)
+        with open("bm25_index.pkl", "rb") as f:
+            data = pickle.load(f)
+        bm25 = data["bm25"]
+        documents = data["documents"]
+        
+        print("Retrieving from BM25 (local index)...")
+        tokenized_query = tokenize(query)
+        scores = bm25.get_scores(tokenized_query)
+        
+        # Get top 10 indices sorted by score descending
+        top_indices = scores.argsort()[::-1][:10]
+        bm25_docs = [documents[i] for i in top_indices]
+    except FileNotFoundError:
+        print("\n[Warning] BM25 index not found. Run 'python indexer.py' first.")
+        print("          Falling back to Dense Search (FAISS) only.\n")
     except Exception as e:
-        print(f"\n[Warning] Could not connect to Elasticsearch at http://localhost:9200.")
+        print(f"\n[Warning] Could not load BM25 index.")
         print(f"          Detail: {e}")
         print("          Falling back to Dense Search (FAISS) only.\n")
 
