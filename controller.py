@@ -20,6 +20,7 @@ import sys
 import os
 import json
 import re
+from functools import lru_cache
 
 # Force UTF-8 on Windows terminals before any other print/import.
 sys.stdout.reconfigure(encoding="utf-8")
@@ -29,9 +30,10 @@ load_dotenv()
 
 # ── Local module imports ──────────────────────────────────────────────────────
 from agents import analyze_query, retrieve_educational_content
-from reranker import rerank_documents
+from reranker import rerank_documents, model as cross_encoder
 from generator import generate_tutor_response
 from evaluator import calculate_token_overlap
+from planner import build_concept_graph, check_prerequisites, get_next_steps
 
 # ── Gemini client (google-genai v1 SDK — installed as google-genai) ─────────────
 from google import genai
@@ -82,7 +84,7 @@ def generate_assessment(topic: str) -> list:
 
     try:
         response = _genai_client.models.generate_content(
-            model="gemini-2.5-flash",
+            model="gemini-3.1-flash-lite",
             contents=prompt,
             config=genai_types.GenerateContentConfig(temperature=0.4),
         )
@@ -104,6 +106,7 @@ def generate_assessment(topic: str) -> list:
 # Agent 7 — Controller: Full Pipeline Orchestration
 # ─────────────────────────────────────────────────────────────────────────────
 
+@lru_cache(maxsize=32)
 def run_edumaestro(user_query: str) -> dict:
     """Agent 7 — Controller.
 
@@ -141,14 +144,47 @@ def run_edumaestro(user_query: str) -> dict:
     print(f"  Intent  : {intent}")
     print(f"  Keywords: {keywords}")
 
+    # ── Step 1b: Concept Graph (Agent 4 — Curriculum Planner) ─────────────────
+    print("\n[Step 1b] Initializing concept graph...")
+    concept_graph = build_concept_graph()
+
+    # Lightweight intent router for current concept
+    if "quadratic" in user_query.lower():
+        current_concept = "Solving Quadratic Equations"
+    elif "factor" in user_query.lower():
+        current_concept = "Factoring Polynomials"
+    elif "graph" in user_query.lower() or "linear" in user_query.lower():
+        current_concept = "Graphing Linear Equations"
+    else:
+        current_concept = "Basic Algebra"
+
+    graph_nodes = [{"id": str(node)} for node in concept_graph.nodes()]
+    graph_links = [{"source": str(u), "target": str(v)} for u, v in concept_graph.edges()]
+    graph_data = {"nodes": graph_nodes, "links": graph_links, "active_node": current_concept}
+    print(f"  Active concept: {current_concept}")
+    print(f"  Graph: {len(graph_nodes)} nodes, {len(graph_links)} edges")
+
+    # ── Curriculum reasoning: prerequisites + recommended next steps ──────────
+    # No student-mastery model yet, so pass mastered=[] to surface ALL immediate
+    # prerequisites the learner should know before the current concept.
+    prerequisites = check_prerequisites(concept_graph, current_concept, [])
+    next_steps = get_next_steps(concept_graph, current_concept)
+    learning_path = {
+        "current": current_concept,
+        "prerequisites": prerequisites,
+        "next_steps": next_steps,
+    }
+    print(f"  Prerequisites : {prerequisites}")
+    print(f"  Next steps    : {next_steps}")
+
     # ── Step 2: Hybrid Retrieval (Agent 2) ────────────────────────────────────
     print("\n[Step 2] Retrieving educational content...")
     raw_results = retrieve_educational_content.invoke(
-        {"query": user_query, "top_k": 5}
+        {"query": user_query, "top_k": 10}
     )
     print(f"  Retrieved {len(raw_results)} candidate chunk(s).")
 
-    # ── Step 3: Reranking (Agent 3/4) — simulate CrossEncoder scores ──────────
+    # ── Step 3: Reranking (Agent 3/4) — real CrossEncoder relevance + MMR ─────
     # rerank_documents expects LangChain Document objects, not plain dicts.
     # We reconstruct lightweight Document-like objects to keep the contract.
     print("\n[Step 3] Reranking with CrossEncoder + MMR (top 3)...")
@@ -163,10 +199,13 @@ def run_edumaestro(user_query: str) -> dict:
         for r in raw_results
     ]
 
-    # Simulate descending relevance scores (indices already ordered by hybrid RRF)
-    simulated_scores = [1.0 - (i * 0.15) for i in range(len(doc_objects))]
+    # Score each (query, passage) pair with the CrossEncoder for true relevance,
+    # then let MMR pick a diverse-but-relevant top 3 from the scored candidates.
+    ce_scores = cross_encoder.predict(
+        [[user_query, d.page_content] for d in doc_objects]
+    ) if doc_objects else []
 
-    top_docs = rerank_documents(simulated_scores, doc_objects, top_k=3)
+    top_docs = rerank_documents(ce_scores, doc_objects, top_k=3)
     print(f"  Reranked down to {len(top_docs)} document(s).")
 
     # ── Step 4: Build evidence string ─────────────────────────────────────────
@@ -182,22 +221,29 @@ def run_edumaestro(user_query: str) -> dict:
     # Extract the plain-text answer for evaluation
     generated_answer_text = tutor_response.answer
 
-    # ── Step 6: Faithfulness Evaluation ───────────────────────────────────────
-    print("\n[Step 6] Running faithfulness evaluation...")
-    score = calculate_token_overlap(generated_answer_text, evidence_string)
-    hallucination_warning = score < _HALLUCINATION_THRESHOLD
+    # ── Short-circuit: refusal detected ───────────────────────────────────────
+    if tutor_response.answer.strip() == "Insufficient evidence":
+        print("\n[Short-circuit] Agent 5 refused — insufficient evidence.")
+        print("  Skipping faithfulness evaluation and quiz generation.")
+        score = 1.0            # refusing to hallucinate is 100% faithful
+        hallucination_warning = False
+        quiz = []
+    else:
+        # ── Step 6: Faithfulness Evaluation ───────────────────────────────────
+        print("\n[Step 6] Running faithfulness evaluation...")
+        score = calculate_token_overlap(generated_answer_text, evidence_string)
+        hallucination_warning = score < _HALLUCINATION_THRESHOLD
 
-    print(f"  Overlap score : {score:.2%}")
-    if hallucination_warning:
-        print("  WARNING: Potential Hallucination Detected.")
-        generated_answer_text += "\n\nWARNING: Potential Hallucination Detected."
+        print(f"  Overlap score : {score:.2%}")
+        if hallucination_warning:
+            print("  WARNING: Potential Hallucination Detected.")
+            generated_answer_text += "\n\nWARNING: Potential Hallucination Detected."
 
-    # ── Step 7: Assessment / Quiz (Agent 6) ───────────────────────────────────
-    print("\n[Step 7] Generating formative quiz...")
-    # Use the first keyword as the topic if available, else fall back to the query
-    quiz_topic = keywords[0] if keywords else user_query
-    quiz = generate_assessment(quiz_topic)
-    print(f"  Generated {len(quiz)} question(s).")
+        # ── Step 7: Assessment / Quiz (Agent 6) ──────────────────────────────
+        print("\n[Step 7] Generating formative quiz...")
+        quiz_topic = keywords[0] if keywords else user_query
+        quiz = generate_assessment(quiz_topic)
+        print(f"  Generated {len(quiz)} question(s).")
 
     # ── Build and return the final consolidated output ────────────────────────
     return {
@@ -211,6 +257,8 @@ def run_edumaestro(user_query: str) -> dict:
         "faithfulness_score":   round(score, 4),
         "hallucination_warning": hallucination_warning,
         "quiz":                 quiz,
+        "graph_data":           graph_data,
+        "learning_path":        learning_path,
     }
 
 
